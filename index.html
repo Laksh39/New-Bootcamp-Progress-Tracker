@@ -7,6 +7,37 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyB-JrV8Qb8UcAth4ucZJfyOjf7OOJqkq1s",
+      authDomain: "bootcamp-tracker-8979e.firebaseapp.com",
+      databaseURL: "https://bootcamp-tracker-8979e-default-rtdb.firebaseio.com",
+      projectId: "bootcamp-tracker-8979e",
+      storageBucket: "bootcamp-tracker-8979e.firebasestorage.app",
+      messagingSenderId: "34384994376",
+      appId: "1:34384994376:web:586592ca9e3d1b5a77787d"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    window.__firebase = {
+      listenProgress: (cb) => {
+        const r = ref(db, "progress");
+        onValue(r, snap => cb(snap.val()));
+        return r;
+      },
+      saveProgress: (data) => set(ref(db, "progress"), data),
+      listenParent: (cb) => {
+        const r = ref(db, "parentAccount");
+        onValue(r, snap => cb(snap.val()));
+      },
+      saveParent: (data) => set(ref(db, "parentAccount"), data),
+    };
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #000308; }
@@ -19,7 +50,6 @@
 </head>
 <body>
   <div id="root"></div>
-
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
@@ -67,8 +97,6 @@
     ];
 
     const EXP_REWARDS = { complete: 120, sign: 50, tool: 30 };
-    const STORAGE_KEY     = "bootcamp-progress-v2";
-    const PARENT_KEY      = "bootcamp-parent-account";
     const SESSION_KEY     = "bootcamp-session";
     const OVERRIDE_SECRET = "password";
 
@@ -93,28 +121,14 @@
       return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
     }
 
-    const storage = {
-      get: (key) => {
-        try {
-          const val = localStorage.getItem(key);
-          return Promise.resolve(val ? { value: val } : null);
-        } catch(e) { return Promise.resolve(null); }
-      },
-      set: (key, value) => {
-        try {
-          localStorage.setItem(key, value);
-          return Promise.resolve({ key, value });
-        } catch(e) { return Promise.reject(e); }
-      },
-      delete: (key) => {
-        try {
-          localStorage.removeItem(key);
-          return Promise.resolve({ key, deleted: true });
-        } catch(e) { return Promise.resolve(null); }
-      },
+    // localStorage for session only (parent credentials + current session)
+    const local = {
+      get: (key) => { try { const v = localStorage.getItem(key); return v ? { value: v } : null; } catch(e) { return null; } },
+      set: (key, val) => { try { localStorage.setItem(key, val); } catch(e) {} },
+      delete: (key) => { try { localStorage.removeItem(key); } catch(e) {} },
     };
 
-    // ── Visual Components ─────────────────────────────────────────
+    // ── Visual helpers ────────────────────────────────────────────
     const StarField = () => {
       const stars = useRef(Array.from({ length: 80 }, (_, i) => ({
         id: i, x: Math.random()*100, y: Math.random()*100,
@@ -228,18 +242,12 @@
         width:"100%", padding:"10px 14px", background:"#0a1628",
         border:"1px solid #1a3a4a", borderRadius:"6px", color:"#e0f7fa",
         fontSize:"13px", fontFamily:"'Courier New',monospace", letterSpacing:"1px",
-        outline:"none", boxSizing:"border-box", transition:"border 0.2s",
+        outline:"none", boxSizing:"border-box",
       };
 
       const btnStyle = (col) => {
         const c = col || "#00e5ff";
-        return {
-          width:"100%", padding:"11px", borderRadius:"6px", cursor:"pointer",
-          fontFamily:"'Courier New',monospace", fontSize:"11px", letterSpacing:"3px",
-          textTransform:"uppercase", fontWeight:"bold", transition:"all 0.2s",
-          border:`1px solid ${c}66`, background:`${c}22`, color:c,
-          boxShadow:`0 0 12px ${c}22`,
-        };
+        return { width:"100%", padding:"11px", borderRadius:"6px", cursor:"pointer", fontFamily:"'Courier New',monospace", fontSize:"11px", letterSpacing:"3px", textTransform:"uppercase", fontWeight:"bold", transition:"all 0.2s", border:`1px solid ${c}66`, background:`${c}22`, color:c, boxShadow:`0 0 12px ${c}22` };
       };
 
       const resetForm = () => { setMode(null); setErr(""); setUser(""); setPass(""); setPass2(""); setOverridePass(""); setOverrideErr(""); setOverrideOk(false); };
@@ -250,12 +258,8 @@
         if (pass !== pass2) return setErr("Passwords do not match.");
         setLoading(true);
         try {
-          if (!overrideOk) {
-            const existing = await storage.get(PARENT_KEY);
-            if (existing && existing.value) { setErr("A parent account already exists."); setLoading(false); return; }
-          }
           const hashed = await hashStr(pass);
-          await storage.set(PARENT_KEY, JSON.stringify({ username: user.trim(), hash: hashed }));
+          await window.__firebase.saveParent({ username: user.trim(), hash: hashed });
           onParent(user.trim());
         } catch(e) { setErr("Save error: " + (e && e.message ? e.message : String(e))); }
         setLoading(false);
@@ -266,12 +270,14 @@
         if (!user.trim() || !pass.trim()) return setErr("Enter username and password.");
         setLoading(true);
         try {
-          const res = await storage.get(PARENT_KEY);
-          if (!res || !res.value) { setErr("No parent account found. Please register first."); setLoading(false); return; }
-          const parsed = JSON.parse(res.value);
+          // Read parent from Firebase via a one-time fetch
+          const res = await new Promise(resolve => {
+            window.__firebase.listenParent(data => resolve(data));
+          });
+          if (!res) { setErr("No parent account found. Please register first."); setLoading(false); return; }
           const hashed = await hashStr(pass);
-          if (user.trim() !== parsed.username || hashed !== parsed.hash) { setErr("Incorrect username or password."); setLoading(false); return; }
-          onParent(parsed.username);
+          if (user.trim() !== res.username || hashed !== res.hash) { setErr("Incorrect username or password."); setLoading(false); return; }
+          onParent(res.username);
         } catch(e) { setErr("Login error: " + (e && e.message ? e.message : String(e))); }
         setLoading(false);
       };
@@ -290,19 +296,13 @@
               <h1 style={{ fontSize:"28px", fontWeight:"900", letterSpacing:"3px", background:"linear-gradient(90deg,#00e5ff,#64ffda)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", margin:"0 0 6px" }}>MISSION CONTROL</h1>
               <p style={{ fontSize:"10px", letterSpacing:"3px", color:"#4dd0e166", margin:0 }}>SELECT ACCESS LEVEL</p>
             </div>
-
             {!mode && (
               <div style={{ display:"flex", flexDirection:"column", gap:"12px" }}>
-                <button onClick={() => setMode(parentExists ? "login" : "register")} style={btnStyle("#00e5ff")}>
-                  {parentExists ? "⬡ Parent Sign In" : "⬡ Register as Parent"}
-                </button>
+                <button onClick={() => setMode(parentExists ? "login" : "register")} style={btnStyle("#00e5ff")}>{parentExists ? "⬡ Parent Sign In" : "⬡ Register as Parent"}</button>
                 <button onClick={onGuest} style={btnStyle("#4dd0e1")}>◈ Continue as Builder (No Sign In)</button>
-                {parentExists && (
-                  <button onClick={() => setMode("override")} style={btnStyle("#607d8b")}>+ Override Parent Account</button>
-                )}
+                {parentExists && <button onClick={() => setMode("override")} style={btnStyle("#607d8b")}>+ Override Parent Account</button>}
               </div>
             )}
-
             {mode && (
               <div style={{ background:"linear-gradient(135deg,#060e1a,#080d18)", border:"1px solid #00e5ff33", borderRadius:"10px", padding:"24px", display:"flex", flexDirection:"column", gap:"14px" }}>
                 {mode === "override" && !overrideOk && (
@@ -311,8 +311,7 @@
                     <div style={{ fontSize:"10px", color:"#4dd0e188", lineHeight:"1.6" }}>Enter the secret override password to replace the existing parent account.</div>
                     <div>
                       <div style={{ fontSize:"9px", letterSpacing:"2px", color:"#4dd0e155", marginBottom:"5px" }}>SECRET PASSWORD</div>
-                      <input value={overridePass} onChange={e => setOverridePass(e.target.value)} type="password" placeholder="••••••••" style={inputStyle}
-                        onFocus={e => { e.target.style.borderColor = "#ffab4066"; }} onBlur={e => { e.target.style.borderColor = "#1a3a4a"; }}/>
+                      <input value={overridePass} onChange={e => setOverridePass(e.target.value)} type="password" placeholder="••••••••" style={inputStyle}/>
                     </div>
                     {overrideErr && <div style={{ fontSize:"10px", color:"#ff5252", padding:"8px 10px", background:"#ff525211", border:"1px solid #ff525233", borderRadius:"4px" }}>⚠ {overrideErr}</div>}
                     <button onClick={handleVerifyOverride} style={btnStyle("#ffab40")}>Verify</button>
@@ -321,31 +320,24 @@
                 )}
                 {(mode !== "override" || overrideOk) && (
                   <div style={{ display:"flex", flexDirection:"column", gap:"14px" }}>
-                    <div style={{ fontSize:"11px", letterSpacing:"3px", color:"#00e5ff" }}>
-                      {(mode === "register" || mode === "override") ? "▸ CREATE PARENT ACCOUNT" : "▸ PARENT SIGN IN"}
-                    </div>
+                    <div style={{ fontSize:"11px", letterSpacing:"3px", color:"#00e5ff" }}>{(mode === "register" || mode === "override") ? "▸ CREATE PARENT ACCOUNT" : "▸ PARENT SIGN IN"}</div>
                     {mode === "override" && <div style={{ fontSize:"9px", color:"#ffab40", padding:"6px 10px", background:"#ffab4011", border:"1px solid #ffab4033", borderRadius:"4px" }}>⚠ Override active — this will replace the existing account.</div>}
                     <div>
                       <div style={{ fontSize:"9px", letterSpacing:"2px", color:"#4dd0e155", marginBottom:"5px" }}>USERNAME</div>
-                      <input value={user} onChange={e => setUser(e.target.value)} placeholder="username" style={inputStyle}
-                        onFocus={e => { e.target.style.borderColor = "#00e5ff66"; }} onBlur={e => { e.target.style.borderColor = "#1a3a4a"; }}/>
+                      <input value={user} onChange={e => setUser(e.target.value)} placeholder="username" style={inputStyle}/>
                     </div>
                     <div>
                       <div style={{ fontSize:"9px", letterSpacing:"2px", color:"#4dd0e155", marginBottom:"5px" }}>PASSWORD</div>
-                      <input value={pass} onChange={e => setPass(e.target.value)} type="password" placeholder="••••••••" style={inputStyle}
-                        onFocus={e => { e.target.style.borderColor = "#00e5ff66"; }} onBlur={e => { e.target.style.borderColor = "#1a3a4a"; }}/>
+                      <input value={pass} onChange={e => setPass(e.target.value)} type="password" placeholder="••••••••" style={inputStyle}/>
                     </div>
                     {(mode === "register" || mode === "override") && (
                       <div>
                         <div style={{ fontSize:"9px", letterSpacing:"2px", color:"#4dd0e155", marginBottom:"5px" }}>CONFIRM PASSWORD</div>
-                        <input value={pass2} onChange={e => setPass2(e.target.value)} type="password" placeholder="••••••••" style={inputStyle}
-                          onFocus={e => { e.target.style.borderColor = "#00e5ff66"; }} onBlur={e => { e.target.style.borderColor = "#1a3a4a"; }}/>
+                        <input value={pass2} onChange={e => setPass2(e.target.value)} type="password" placeholder="••••••••" style={inputStyle}/>
                       </div>
                     )}
                     {err && <div style={{ fontSize:"10px", color:"#ff5252", padding:"8px 10px", background:"#ff525211", border:"1px solid #ff525233", borderRadius:"4px" }}>⚠ {err}</div>}
-                    <button onClick={mode === "login" ? handleLogin : handleRegister} disabled={loading} style={btnStyle("#00e5ff")}>
-                      {loading ? "..." : (mode === "register" || mode === "override") ? "Create Account" : "Sign In"}
-                    </button>
+                    <button onClick={mode === "login" ? handleLogin : handleRegister} disabled={loading} style={btnStyle("#00e5ff")}>{loading ? "..." : (mode === "register" || mode === "override") ? "Create Account" : "Sign In"}</button>
                     <button onClick={resetForm} style={{ background:"transparent", border:"none", color:"#4dd0e155", fontSize:"10px", letterSpacing:"2px", cursor:"pointer", fontFamily:"inherit", textAlign:"center" }}>← Back</button>
                   </div>
                 )}
@@ -372,9 +364,7 @@
             </div>
             <div style={{ textAlign:"right", flexShrink:0 }}>
               <div style={{ fontSize:"9px", letterSpacing:"2px", color:"#4dd0e155" }}>NEXT LEVEL</div>
-              <div style={{ fontSize:"16px", fontWeight:"bold", color:levelInfo.color }}>
-                {levelInfo.level < LEVELS.length ? `${(expNeeded - expInLevel).toLocaleString()} EXP` : "MAX"}
-              </div>
+              <div style={{ fontSize:"16px", fontWeight:"bold", color:levelInfo.color }}>{levelInfo.level < LEVELS.length ? `${(expNeeded-expInLevel).toLocaleString()} EXP` : "MAX"}</div>
             </div>
           </div>
           <div style={{ marginBottom:"16px" }}>
@@ -386,11 +376,7 @@
             </div>
           </div>
           <div style={{ display:"flex", gap:"8px", marginBottom:"14px" }}>
-            {[
-              { icon:"⚡", label:"Mission",   exp:EXP_REWARDS.complete, color:"#64ffda" },
-              { icon:"✦",  label:"Signature", exp:EXP_REWARDS.sign,     color:"#00e5ff" },
-              { icon:"🛠",  label:"Per Tool",  exp:EXP_REWARDS.tool,     color:"#ff6b35" },
-            ].map(r => (
+            {[{icon:"⚡",label:"Mission",exp:EXP_REWARDS.complete,color:"#64ffda"},{icon:"✦",label:"Signature",exp:EXP_REWARDS.sign,color:"#00e5ff"},{icon:"🛠",label:"Per Tool",exp:EXP_REWARDS.tool,color:"#ff6b35"}].map(r => (
               <div key={r.label} style={{ flex:1, background:"#0a1628", border:`1px solid ${r.color}33`, borderRadius:"6px", padding:"8px 6px", textAlign:"center" }}>
                 <div style={{ fontSize:"14px" }}>{r.icon}</div>
                 <div style={{ fontSize:"11px", color:r.color, fontWeight:"bold" }}>+{r.exp}</div>
@@ -400,11 +386,10 @@
           </div>
           <div style={{ display:"flex", gap:"4px", alignItems:"flex-end" }}>
             {LEVELS.map(lv => {
-              const active = totalExp >= lv.minExp;
-              const current = lv.level === levelInfo.level;
+              const active = totalExp >= lv.minExp, current = lv.level === levelInfo.level;
               return (
                 <div key={lv.level} style={{ flex:1, textAlign:"center" }}>
-                  <div style={{ height:`${6 + lv.level * 2.5}px`, background:active?lv.color:"#1a3a4a", borderRadius:"2px 2px 0 0", boxShadow:current?`0 0 8px ${lv.color}`:"none", transition:"all 0.3s", animation:current?"pulse 1.5s ease-in-out infinite":"none" }} />
+                  <div style={{ height:`${6+lv.level*2.5}px`, background:active?lv.color:"#1a3a4a", borderRadius:"2px 2px 0 0", boxShadow:current?`0 0 8px ${lv.color}`:"none", transition:"all 0.3s", animation:current?"pulse 1.5s ease-in-out infinite":"none" }} />
                   <div style={{ fontSize:"6px", color:active?lv.color:"#1a3a4a", marginTop:"3px" }}>{lv.level}</div>
                 </div>
               );
@@ -419,7 +404,7 @@
       const [ripple, setRipple] = useState(false);
       const [burst, setBurst]   = useState(null);
       const cardRef = useRef(null);
-      const tools   = card.tools || [];
+      const tools = card.tools || [];
       const cardExp = getExpForActions(card);
 
       const handleToggle = () => {
@@ -449,7 +434,7 @@
                 <div style={{ fontSize:"9px", letterSpacing:"3px", color:"#4dd0e188", textTransform:"uppercase", marginBottom:"4px" }}>DAY {String(card.day).padStart(2,"0")}</div>
                 <div style={{ fontSize:"15px", fontWeight:"900", letterSpacing:"1px", color:card.completed?"#64ffda":"#7fdbff", textTransform:"uppercase", textShadow:card.completed?"0 0 10px #64ffda66":"none", transition:"all 0.3s" }}>{card.title}</div>
               </div>
-              <button onClick={handleToggle} title={card.completed?"Click to undo":"Mark complete"} style={{ width:"36px", height:"36px", borderRadius:"50%", flexShrink:0, border:card.completed?"2px solid #00e5ff":"2px solid #1a4a5a", background:card.completed?"radial-gradient(circle,#00e5ff33,#00bfa511)":"transparent", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"16px", color:card.completed?"#00e5ff":"#4dd0e144", boxShadow:card.completed?"0 0 14px #00e5ff88":"none", transition:"all 0.2s" }}>
+              <button onClick={handleToggle} style={{ width:"36px", height:"36px", borderRadius:"50%", flexShrink:0, border:card.completed?"2px solid #00e5ff":"2px solid #1a4a5a", background:card.completed?"radial-gradient(circle,#00e5ff33,#00bfa511)":"transparent", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"16px", color:card.completed?"#00e5ff":"#4dd0e144", boxShadow:card.completed?"0 0 14px #00e5ff88":"none", transition:"all 0.2s" }}>
                 {card.completed ? "✓" : "○"}
               </button>
             </div>
@@ -458,8 +443,7 @@
               <div style={{ fontSize:"9px", letterSpacing:"2px", color:"#4dd0e155", marginBottom:"6px" }}>▸ TOOLS USED <span style={{ color:"#4dd0e133" }}>(select all that apply)</span></div>
               <div style={{ display:"flex", gap:"5px", flexWrap:"wrap" }}>
                 {TOOLS.map(t => {
-                  const tc = TOOL_COLORS[t];
-                  const active = tools.includes(t);
+                  const tc = TOOL_COLORS[t], active = tools.includes(t);
                   return (
                     <button key={t} onClick={() => onSetTool(t)} style={{ flex:"1 1 auto", minWidth:"52px", padding:"6px 4px", borderRadius:"4px", border:active?`1px solid ${tc.bg}`:"1px solid #1a3a4a", background:active?`${tc.bg}22`:"transparent", color:active?tc.text:"#4dd0e144", fontSize:"10px", letterSpacing:"1px", cursor:"pointer", fontFamily:"inherit", textTransform:"uppercase", boxShadow:active?`0 0 10px ${tc.glow}`:"none", transition:"all 0.2s", fontWeight:active?"bold":"normal", position:"relative" }}>
                       {active && <span style={{ position:"absolute", top:"-5px", right:"-5px", width:"10px", height:"10px", borderRadius:"50%", background:tc.bg, fontSize:"7px", display:"flex", alignItems:"center", justifyContent:"center", color:"#000", fontWeight:"bold" }}>✓</span>}
@@ -477,25 +461,21 @@
                   <span style={{ fontSize:"16px" }}>✦</span>
                   <span style={{ fontSize:"10px", color:"#00e5ff", letterSpacing:"2px" }}>AUTHORIZED</span>
                   {isParent ? (
-                    <button onClick={onSign} style={{ marginLeft:"auto", background:"transparent", border:"1px solid #ff525233", borderRadius:"4px", padding:"2px 8px", color:"#ff5252aa", fontSize:"9px", letterSpacing:"1px", cursor:"pointer", fontFamily:"inherit", textTransform:"uppercase", transition:"all 0.2s" }}
+                    <button onClick={onSign} style={{ marginLeft:"auto", background:"transparent", border:"1px solid #ff525233", borderRadius:"4px", padding:"2px 8px", color:"#ff5252aa", fontSize:"9px", letterSpacing:"1px", cursor:"pointer", fontFamily:"inherit", textTransform:"uppercase" }}
                       onMouseEnter={e => { e.currentTarget.style.borderColor="#ff5252"; e.currentTarget.style.color="#ff5252"; e.currentTarget.style.background="#ff525222"; }}
                       onMouseLeave={e => { e.currentTarget.style.borderColor="#ff525233"; e.currentTarget.style.color="#ff5252aa"; e.currentTarget.style.background="transparent"; }}>
                       ✕ unsign
                     </button>
-                  ) : (
-                    <span style={{ marginLeft:"auto", fontSize:"9px", color:"#4dd0e166" }}>VERIFIED</span>
-                  )}
+                  ) : <span style={{ marginLeft:"auto", fontSize:"9px", color:"#4dd0e166" }}>VERIFIED</span>}
                 </div>
               ) : isParent ? (
-                <button onClick={onSign} style={{ width:"100%", padding:"9px", background:"transparent", border:"1px dashed #00e5ff55", borderRadius:"4px", color:"#00e5ffaa", fontSize:"10px", letterSpacing:"2px", cursor:"pointer", fontFamily:"inherit", textTransform:"uppercase", transition:"all 0.2s" }}
+                <button onClick={onSign} style={{ width:"100%", padding:"9px", background:"transparent", border:"1px dashed #00e5ff55", borderRadius:"4px", color:"#00e5ffaa", fontSize:"10px", letterSpacing:"2px", cursor:"pointer", fontFamily:"inherit", textTransform:"uppercase" }}
                   onMouseEnter={e => { e.currentTarget.style.background="#00e5ff11"; }}
                   onMouseLeave={e => { e.currentTarget.style.background="transparent"; }}>
                   ✦ Sign as Parent
                 </button>
               ) : (
-                <div style={{ padding:"9px", border:"1px dashed #1a3a4a", borderRadius:"4px", color:"#2a5a7a", fontSize:"10px", letterSpacing:"2px", textAlign:"center", textTransform:"uppercase" }}>
-                  🔒 Parent sign-in required
-                </div>
+                <div style={{ padding:"9px", border:"1px dashed #1a3a4a", borderRadius:"4px", color:"#2a5a7a", fontSize:"10px", letterSpacing:"2px", textAlign:"center", textTransform:"uppercase" }}>🔒 Parent sign-in required</div>
               )}
             </div>
             {card.completed && <div style={{ position:"absolute", bottom:0, left:0, right:0, height:"3px", background:"linear-gradient(90deg,transparent,#00e5ff,#64ffda,transparent)", animation:"pulse 2s ease-in-out infinite" }} />}
@@ -516,14 +496,29 @@
       const [prevLevel, setPrevLevel]       = useState(1);
       const [saveStatus, setSaveStatus]     = useState("idle");
       const [isLoading, setIsLoading]       = useState(true);
-      const saveTimer = useRef(null);
-      const isMounted = useRef(false);
+      const [fbReady, setFbReady]           = useState(false);
+      const saveTimer  = useRef(null);
+      const isMounted  = useRef(false);
+      const isRemote   = useRef(false); // flag to avoid re-saving Firebase updates
 
+      // Wait for Firebase to be injected by the module script
       useEffect(() => {
+        const interval = setInterval(() => {
+          if (window.__firebase) { setFbReady(true); clearInterval(interval); }
+        }, 100);
+        return () => clearInterval(interval);
+      }, []);
+
+      // Auth init
+      useEffect(() => {
+        if (!fbReady) return;
         const init = async () => {
-          const p = await storage.get(PARENT_KEY);
-          if (p && p.value) setParentExists(true);
-          const s = await storage.get(SESSION_KEY);
+          // Check if parent exists in Firebase
+          window.__firebase.listenParent(data => {
+            if (data && data.username) setParentExists(true);
+          });
+          // Restore session from localStorage
+          const s = local.get(SESSION_KEY);
           if (s && s.value) {
             const parsed = JSON.parse(s.value);
             if (parsed.role === "parent") { setSession("parent"); setParentName(parsed.name || ""); }
@@ -532,41 +527,47 @@
           setCheckingAuth(false);
         };
         init();
-      }, []);
+      }, [fbReady]);
 
+      // Load + live-sync progress from Firebase
       useEffect(() => {
-        if (checkingAuth) return;
-        const load = async () => {
-          const r = await storage.get(STORAGE_KEY);
-          if (r && r.value) {
-            const saved = JSON.parse(r.value);
+        if (checkingAuth || !fbReady) return;
+        window.__firebase.listenProgress(data => {
+          if (data) {
+            const saved = Array.isArray(data) ? data : Object.values(data);
+            isRemote.current = true;
             setCards(MISSIONS.map(m => {
               const s = saved.find(x => x.day === m.day);
               return s ? { ...m, completed:s.completed, signed:s.signed, tools:s.tools||(s.tool?[s.tool]:[]) } : { ...m, completed:false, signed:false, tools:[] };
             }));
-            const exp = saved.reduce((sum, c) => {
-              let x = 0;
-              if (c.completed) x += EXP_REWARDS.complete;
-              if (c.signed)    x += EXP_REWARDS.sign;
-              x += (c.tools ? c.tools.length : (c.tool ? 1 : 0)) * EXP_REWARDS.tool;
-              return sum + x;
-            }, 0);
-            setPrevLevel(getLevelInfo(exp).level);
+            if (isLoading) {
+              const exp = saved.reduce((sum, c) => {
+                let x = 0;
+                if (c.completed) x += EXP_REWARDS.complete;
+                if (c.signed)    x += EXP_REWARDS.sign;
+                x += (c.tools ? c.tools.length : (c.tool ? 1 : 0)) * EXP_REWARDS.tool;
+                return sum + x;
+              }, 0);
+              setPrevLevel(getLevelInfo(exp).level);
+              setIsLoading(false);
+            }
+          } else {
+            setIsLoading(false);
           }
-          setIsLoading(false);
-        };
-        load();
-      }, [checkingAuth]);
+        });
+      }, [checkingAuth, fbReady]);
 
+      // Save to Firebase when cards change (debounced, skip remote updates)
       useEffect(() => {
         if (!isMounted.current) { isMounted.current = true; return; }
         if (isLoading || checkingAuth) return;
+        if (isRemote.current) { isRemote.current = false; return; }
         setSaveStatus("saving");
         if (saveTimer.current) clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(async () => {
           try {
             const payload = cards.map(c => ({ day:c.day, completed:c.completed, signed:c.signed, tools:c.tools }));
-            await storage.set(STORAGE_KEY, JSON.stringify(payload));
+            await window.__firebase.saveProgress(payload);
             setSaveStatus("saved");
             setTimeout(() => setSaveStatus("idle"), 2000);
           } catch(e) { setSaveStatus("error"); }
@@ -575,15 +576,15 @@
 
       const handleParentLogin = async (name) => {
         setSession("parent"); setParentName(name); setParentExists(true);
-        await storage.set(SESSION_KEY, JSON.stringify({ role:"parent", name }));
+        local.set(SESSION_KEY, JSON.stringify({ role:"parent", name }));
       };
-      const handleGuest = async () => {
+      const handleGuest = () => {
         setSession("guest");
-        await storage.set(SESSION_KEY, JSON.stringify({ role:"guest" }));
+        local.set(SESSION_KEY, JSON.stringify({ role:"guest" }));
       };
-      const handleSignOut = async () => {
+      const handleSignOut = () => {
         setSession(null);
-        await storage.delete(SESSION_KEY);
+        local.delete(SESSION_KEY);
       };
 
       const totalExp      = cards.reduce((sum, c) => sum + getExpForActions(c), 0);
@@ -621,9 +622,12 @@
         else      showToast([{ exp:-EXP_REWARDS.tool, label:`Tool Removed: ${tool}`, icon:"🛠", color:"#ff5252" }]);
       };
 
-      if (checkingAuth) return (
+      if (!fbReady || checkingAuth) return (
         <div style={{ minHeight:"100vh", background:"radial-gradient(ellipse at 20% 20%,#0a0f1e,#050810,#000308)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Courier New',monospace", color:"#00e5ff" }}>
-          <div style={{ fontSize:"12px", letterSpacing:"4px" }}>INITIALIZING...</div>
+          <div style={{ textAlign:"center" }}>
+            <div style={{ fontSize:"12px", letterSpacing:"4px", marginBottom:"16px" }}>CONNECTING TO DATABASE...</div>
+            <div style={{ width:"40px", height:"40px", margin:"0 auto", border:"2px solid #00e5ff33", borderTop:"2px solid #00e5ff", borderRadius:"50%", animation:"spin 1s linear infinite" }} />
+          </div>
         </div>
       );
 
@@ -652,7 +656,7 @@
               <span style={{ fontSize:"12px" }}>{isParent ? "✦" : "◈"}</span>
               <span style={{ fontSize:"9px", color:isParent?"#00e5ff":"#4dd0e166", letterSpacing:"2px" }}>{isParent ? `PARENT: ${parentName.toUpperCase()}` : "BUILDER MODE"}</span>
             </div>
-            <button onClick={handleSignOut} style={{ background:"transparent", border:"1px solid #1a3a4a", borderRadius:"6px", padding:"6px 10px", color:"#4dd0e155", fontSize:"9px", letterSpacing:"1px", cursor:"pointer", fontFamily:"inherit", textTransform:"uppercase", transition:"all 0.2s" }}
+            <button onClick={handleSignOut} style={{ background:"transparent", border:"1px solid #1a3a4a", borderRadius:"6px", padding:"6px 10px", color:"#4dd0e155", fontSize:"9px", letterSpacing:"1px", cursor:"pointer", fontFamily:"inherit", textTransform:"uppercase" }}
               onMouseEnter={e => { e.currentTarget.style.borderColor="#ff525266"; e.currentTarget.style.color="#ff5252"; }}
               onMouseLeave={e => { e.currentTarget.style.borderColor="#1a3a4a"; e.currentTarget.style.color="#4dd0e155"; }}>
               ← exit
@@ -685,7 +689,7 @@
           </div>
 
           <div style={{ textAlign:"center", marginTop:"40px", position:"relative", zIndex:2 }}>
-            <div style={{ fontSize:"10px", letterSpacing:"3px", color:"#1a3a4a" }}>◈ SYSTEM ONLINE · ANTHROPIC NEURAL NET · BUILD v15.0 ◈</div>
+            <div style={{ fontSize:"10px", letterSpacing:"3px", color:"#1a3a4a" }}>◈ SYSTEM ONLINE · FIREBASE SYNC · BUILD v15.0 ◈</div>
           </div>
         </div>
       );
